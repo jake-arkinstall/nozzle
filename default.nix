@@ -1,5 +1,6 @@
+{ pkgs ? import <nixpkgs> {} }:
+
 {
-  pkgs ? import <nixpkgs> {},
   workspace-root ? ./.,
   relative-directory ? /.,
   workspace ? {}
@@ -11,8 +12,7 @@ let
     import (path + /build.nix)
     {
       pkgs = pkgs;
-      nozzle = import ./nozzle.nix {
-        pkgs = pkgs;
+      nozzle = import ./. { inherit pkgs; } {
         workspace-root = workspace-root;
         relative-directory = relative-directory + ("/" + (builtins.baseNameOf path));
       };
