@@ -4,27 +4,41 @@
   relative-directory
 }:
 let
-  inherit (pkgs.lib.strings) concatStrings concatStringsSep;
+  inherit (pkgs.lib.strings) concatStrings;
+  inherit (pkgs.lib.lists) concatLists unique;
 in
 {name, source, dependencies ? []}:
 let
   ###########
   # helpers #
   ###########
-  # Generate a list of include flags
-  include-flags = concatStrings (map (d: "-I${d}/include ") dependencies);
+  # get subdependencies from a single dependency
+  subdependencies = dep: [dep] ++ dep.propagatedBuildInputs;
+  # get all subdependencies across all dependencies
+  all-subdependencies = unique (dependencies ++ concatLists (map (d: d.propagatedBuildInputs) dependencies));
 
-  # Linking is more awkward, because header-only libraries don't have
-  # lib.a files to link with. We could use nix logic for this, but
-  # for the time being pass that logic onto bash - build a list of
-  # lib.a files that exist.
-  static-files = map (d: "${d}/lib/lib.a") dependencies;
-  static-filter = dependency: ''
-    if [ -f ${dependency}/lib/lib.a ]; then
-       static="$static ${dependency}/lib/lib.a";
-    fi;
+  # For getting includes, objects, shared objects, and cflags
+  # for each dependency, via bash variable appending logic
+  get-includes-impl = dependency: ''
+    includes="$includes -I${dependency}/include";
   '';
-  build-static-subset = concatStrings (map static-filter dependencies);
+  get-objects-impl = dependency: ''
+    for f in ${dependency}/lib/*.a; do
+       objects="$objects $f";
+    done
+  '';
+  get-shared-objects-impl = dependency: ''
+    for f in ${dependency}/lib/*.so; do
+       shared_objects="$shared_objects $f";
+    done
+  '';
+  get-cflags-impl = dependency: '' 
+    cflags="$cflags ${dependency.cflags}";
+  '';
+  get-includes = concatStrings (map get-includes-impl all-subdependencies);
+  get-objects = concatStrings (map get-objects-impl all-subdependencies);
+  get-shared-objects = concatStrings (map get-shared-objects-impl all-subdependencies);
+  get-cflags = concatStrings (map get-cflags-impl all-subdependencies);
 
 
   ###############
@@ -36,7 +50,12 @@ let
     name = "${name}-intermediate";
     phases=["buildPhase" "installPhase"];
     buildPhase = ''
-      gcc -c -o a.o --std=c++20 -O3 ${include-flags} ${source};
+      includes="";
+      cflags="";
+      ${get-includes}
+      ${get-cflags}
+      echo "gcc -c -o a.o --std=c++20 -O3 $includes $cflags ${source}";
+      gcc -c -o a.o --std=c++20 -O3 $includes $cflags ${source};
     '';
     installPhase = ''
       mkdir $out;
@@ -49,9 +68,12 @@ let
     inherit name;
     phases=["buildPhase" "installPhase"];
     buildPhase = ''
-      static="";
-      ${build-static-subset}
-      gcc ${intermediate-object}/a.o $static -o a.out;
+      objects="";
+      shared_objects="";
+      ${get-objects}
+      ${get-shared-objects}
+      echo "gcc -o a.out ${intermediate-object}/a.o $objects $shared_objects";
+      gcc -o a.out ${intermediate-object}/a.o $objects $shared_objects -lstdc++
     '';
     installPhase = ''
       mkdir -p $out/bin;

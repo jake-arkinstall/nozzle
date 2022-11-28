@@ -1,13 +1,13 @@
 {
   pkgs,
-  workspace-root,
   relative-directory
 }:
 let
   inherit (pkgs.lib.strings) concatStrings concatStringsSep;
+  inherit (pkgs.lib.lists) concatLists;
   inherit (builtins) length;
 in
-{name, headers, sources ? []}:
+{name, headers, cflags ? "", sources ? [], dependencies ? []}:
 let
   ###########
   # Helpers #
@@ -44,7 +44,7 @@ let
     name = builtins.toString source;
     phases = ["buildPhase" "installPhase"];
     buildPhase = ''
-      gcc -c -o lib.o --std=c++20 -O3 -I${target-headers} ${source};
+      gcc -c -o lib.o --std=c++20 -O3 -I${target-headers} ${cflags} ${source};
     '';
     installPhase = ''
       mkdir -p $out;
@@ -68,18 +68,25 @@ let
         mkdir -p $out;
       '' else ''
         mkdir -p $out;
-        install -Dm0775 lib.a $out/lib.a;
+        mkdir -p $out/lib;
+        install -Dm0775 lib.a $out/lib/lib${name}.a;
       '';
   };
   
   # combine headers and library into one derivation
   complete-library = pkgs.stdenv.mkDerivation{
     inherit name;
+    inherit cflags;
+    propagatedBuildInputs = concatLists (map (x: [x] ++ x.propagatedBuildInputs) dependencies);
     phases = ["installPhase"];
     installPhase = ''
        mkdir -p $out;
        cp -r ${target-headers} $out/include;
-       cp -r ${build-library} $out/lib;
+       if [ -d ${build-library}/lib ]; then
+         cp -r ${build-library}/lib $out;
+       else
+         mkdir $out/lib;
+       fi;
     '';
   };
 
