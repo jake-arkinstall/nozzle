@@ -1,17 +1,30 @@
 {
   pkgs,
-  relative-directory
+  relative-directory,
+  pkg-wrapper
 }:
 let
   inherit (pkgs.lib.strings) concatStrings concatStringsSep;
-  inherit (pkgs.lib.lists) concatLists;
+  inherit (pkgs.lib.lists) concatLists unique;
   inherit (builtins) length;
 in
-{name, headers, cflags ? "", sources ? [], dependencies ? []}:
+{name, headers ? [], cflags ? "", sources ? [], dependencies ? []}:
 let
   ###########
   # Helpers #
   ###########
+  # if dependencies are native, e.g. pkgs.fmt instead of a pre-wrapped
+  # pkg-wrapper dependencies, they need to be wrapped. pkg-wrapper maps
+  # pre-wrapped packages to themselves, so the following won't impact those.
+  dependencies' = map (x: pkg-wrapper{name=x.name; derivation=x; cflags="";}) dependencies;
+  # get subdependencies from a single dependency
+  subdependencies = dep: [dep] ++ dep.propagatedBuildInputs;
+  # get all subdependencies across all dependencies
+  all-subdependencies = unique (dependencies' ++ concatLists (map (d: d.propagatedBuildInputs) dependencies'));
+  get-includes-impl = dependency: ''
+    includes="$includes -I${dependency}/include";
+  '';
+  get-includes = concatStrings (map get-includes-impl all-subdependencies);
 
   # headers can't be placed in the derivation root directory,
   # because source files will refer to them by their path relative
@@ -41,10 +54,13 @@ let
 
   # build an individual library object into lib.o files
   build-source = source: pkgs.stdenv.mkDerivation {
-    name = builtins.toString source;
+    name = builtins.baseNameOf source;
     phases = ["buildPhase" "installPhase"];
     buildPhase = ''
-      gcc -c -o lib.o --std=c++20 -O3 -I${target-headers} ${cflags} ${source};
+      includes="";
+      ${get-includes}
+      echo "$CXX -c -o lib.o --std=c++20 -O3 $includes -I${target-headers} ${cflags} ${source};"
+      $CXX -c -o lib.o --std=c++20 -O3 $includes -I${target-headers} ${cflags} ${source};
     '';
     installPhase = ''
       mkdir -p $out;
@@ -77,7 +93,9 @@ let
   complete-library = pkgs.stdenv.mkDerivation{
     inherit name;
     inherit cflags;
-    propagatedBuildInputs = concatLists (map (x: [x] ++ x.propagatedBuildInputs) dependencies);
+    nozzle-target = true;
+
+    propagatedBuildInputs = concatLists (map (x: [x] ++ x.propagatedBuildInputs) dependencies');
     phases = ["installPhase"];
     installPhase = ''
        mkdir -p $out;
