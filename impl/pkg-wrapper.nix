@@ -9,6 +9,7 @@ let
     pkgs.stdenv.mkDerivation{
       name = "${derivation.name}-wrapped";
       nozzle-target = true;
+      is-external = true;
       phases=["installPhase"];
       # wrap dependencies as further pkg-wrappers
       propagatedBuildInputs = if (builtins.hasAttr "propagatedBuildInputs" derivation)

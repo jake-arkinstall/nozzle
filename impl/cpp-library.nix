@@ -21,9 +21,12 @@ let
   subdependencies = dep: [dep] ++ dep.propagatedBuildInputs;
   # get all subdependencies across all dependencies
   all-subdependencies = unique (dependencies' ++ concatLists (map (d: d.propagatedBuildInputs) dependencies'));
-  get-includes-impl = dependency: ''
-    includes="$includes -I${dependency}/include";
-  '';
+  get-includes-impl = dependency:
+    if dependency.is-external then ''
+      includes="$includes -isystem ${dependency}/include";
+    '' else ''
+      includes="$includes -I${dependency}/include";
+    '';
   get-includes = concatStrings (map get-includes-impl all-subdependencies);
 
   # headers can't be placed in the derivation root directory,
@@ -93,6 +96,8 @@ let
   complete-library = pkgs.stdenv.mkDerivation{
     inherit name;
     inherit cflags;
+
+    is-external = false;
     nozzle-target = true;
 
     propagatedBuildInputs = concatLists (map (x: [x] ++ x.propagatedBuildInputs) dependencies');

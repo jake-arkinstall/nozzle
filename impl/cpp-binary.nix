@@ -23,9 +23,12 @@ let
 
   # For getting includes, objects, shared objects, and cflags
   # for each dependency, via bash variable appending logic
-  get-includes-impl = dependency: ''
-    includes="$includes -I${dependency}/include";
-  '';
+  get-includes-impl = dependency:
+    if dependency.is-external then ''
+      includes="$includes -isystem ${dependency}/include";
+    '' else ''
+      includes="$includes -I${dependency}/include";
+    '';
   get-objects-impl = dependency: ''
     for f in ${dependency}/lib/*.a; do
        objects="$objects $f";
