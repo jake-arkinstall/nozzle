@@ -76,7 +76,7 @@ let
       shared_objects="";
       ${get-objects}
       ${get-shared-objects}
-      $CXX -o a.out ${intermediate-object}/a.o $objects $shared_objects -lstdc++
+      $CXX -o a.out ${intermediate-object}/a.o -Wl,--start-group $objects $shared_objects -Wl,--end-group -lstdc++;
     '';
     installPhase = ''
       mkdir -p $out/bin;
