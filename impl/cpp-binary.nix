@@ -4,48 +4,27 @@
   pkg-wrapper
 }:
 let
-  inherit (pkgs.lib.strings) concatStrings;
-  inherit (pkgs.lib.lists) concatLists unique;
+  inherit (pkgs.lib.strings) concatStrings concatStringsSep;
+  inherit (pkgs.lib.lists) concatLists unique length;
+  spaced = concatStringsSep " ";
 in
 {name, source, dependencies ? []}:
 let
-  ###########
-  # helpers #
-  ###########
-  # if dependencies are native, e.g. pkgs.fmt instead of a pre-wrapped
-  # pkg-wrapper dependencies, they need to be wrapped. pkg-wrapper maps
-  # pre-wrapped packages to themselves, so the following won't impact those.
-  dependencies' = map (x: pkg-wrapper{name=x.name; derivation=x; cflags="";}) dependencies;
-  # get subdependencies from a single dependency
-  subdependencies = dep: [dep] ++ dep.propagatedBuildInputs;
-  # get all subdependencies across all dependencies
-  all-subdependencies = unique (dependencies' ++ concatLists (map (d: d.propagatedBuildInputs) dependencies'));
+  dependencies' = map (x: pkg-wrapper{name=x.name; derivation=x;}) dependencies;
+  subdependencies = dep: [dep] ++ dep.dependencies;
+  all-subdependencies = unique (dependencies' ++ concatLists (map (d: d.dependencies) dependencies'));
+  all-libs = map (x: x.library) (builtins.filter (x: x.has-library) all-subdependencies);
 
-  # For getting includes, objects, shared objects, and cflags
-  # for each dependency, via bash variable appending logic
-  get-includes-impl = dependency:
-    if dependency.is-external then ''
-      includes="$includes -isystem ${dependency}/include";
-    '' else ''
-      includes="$includes -I${dependency}/include";
-    '';
-  get-objects-impl = dependency: ''
-    for f in ${dependency}/lib/*.a; do
-       objects="$objects $f";
-    done
-  '';
-  get-shared-objects-impl = dependency: ''
-    for f in ${dependency}/lib/*.so ${dependency}/lib/*.dylib; do
-       shared_objects="$shared_objects $f";
-    done
-  '';
-  get-cflags-impl = dependency: '' 
-    cflags="$cflags ${dependency.cflags}";
-  '';
-  get-includes = concatStrings (map get-includes-impl all-subdependencies);
-  get-objects = concatStrings (map get-objects-impl all-subdependencies);
-  get-shared-objects = concatStrings (map get-shared-objects-impl all-subdependencies);
-  get-cflags = concatStrings (map get-cflags-impl all-subdependencies);
+
+
+  single-include = dependency:
+    if dependency.is-external
+    then "-isystem ${dependency.headers}/include"
+    else "-I${dependency.headers}/include";
+  all-includes = spaced (map single-include all-subdependencies);
+  remove-references = spaced ((map (d: d.headers) all-subdependencies) ++ (map (d: d.library) (builtins.filter (x: x.has-library) all-subdependencies)));
+
+  cflags = spaced (map (d: spaced d.cflags) all-subdependencies);
 
 
   ###############
@@ -55,17 +34,25 @@ let
   # build the source file as an object before linking
   intermediate-object = pkgs.stdenv.mkDerivation{
     name = "${name}-intermediate";
-    phases=["buildPhase" "installPhase"];
+    phases=["unpackPhase" "buildPhase" "installPhase"];
+    src = source;
+    unpackPhase = ''
+      runHook preUnpack
+      cp $src source.cpp;
+      all_includes="${all-includes}";
+      cflags="${cflags}";
+      runHook postUnpack
+    '';
     buildPhase = ''
-      includes="";
-      cflags="";
-      ${get-includes}
-      ${get-cflags}
-      $CXX -c -o a.o --std=c++20 -O3 $includes $cflags ${source};
+      runHook preBuild
+      $CXX -c -o a.o --std=c++20 -O3 $all_includes $cflags source.cpp;
+      runHook postBuild
     '';
     installPhase = ''
+      runHook preInstall
       mkdir $out;
       install -Dm0775 a.o $out/a.o
+      runHook postInstall
     '';
   };
 
@@ -73,17 +60,49 @@ let
   executable = pkgs.stdenv.mkDerivation{
     inherit name;
     nozzle-target = true;
-    phases=["buildPhase" "installPhase"];
+    phases=["unpackPhase" "buildPhase" "installPhase"];
+    buildInputs = all-libs;
+    src = ["${intermediate-object}/a.o"];
+    nativeBuildInputs = [pkgs.removeReferencesTo];
+    unpackPhase = ''
+      runHook preUnpack
+      cp $src .
+      runHook postUnpack
+    '';
     buildPhase = ''
+      runHook preBuild
+
       objects="";
       shared_objects="";
-      ${get-objects}
-      ${get-shared-objects}
-      $CXX -o a.out ${intermediate-object}/a.o -Wl,--start-group $objects $shared_objects -Wl,--end-group -lstdc++;
+      for lib in $buildInputs; do
+        for f in $lib/lib/*.a; do
+           objects="$objects $f";
+        done
+        for f in $lib/lib/*.so $lib/lib/*.dylib; do
+           shared_objects="$shared_objects $f";
+        done
+      done
+
+      echo "$CXX -o a.out a.o -Wl,--start-group $objects $shared_objects -Wl,--end-group -lstdc++;";
+      $CXX -o a.out a.o -Wl,--start-group $objects $shared_objects -Wl,--end-group -lstdc++;
+      runHook postBuild
     '';
     installPhase = ''
+      runHook preInstall
       mkdir -p $out/bin;
-      install -Dm0775 a.out $out/bin/${name};
+      install -Dm0775 a.out $out/bin/$name;
+      runHook postInstall
+    '';
+    postInstall = if length all-subdependencies == 0 then "" else ''
+      for ref in ${remove-references}; do
+        echo "Checking $ref";
+        if [ -z "$(find $ref -name '*.so' -o -name '*.dylib')" ]; then
+          echo "No shared libraries found, removing reference";
+          remove-references-to -t $ref $out/bin/$name
+        else
+          echo "Shared libraries identifier, not removing reference";
+        fi;
+      done;
     '';
   };
 
